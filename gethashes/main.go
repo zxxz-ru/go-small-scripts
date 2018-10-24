@@ -15,11 +15,33 @@ const (
   123456 - hashes seed, not less than 6 digits,
   3 - number of iterations, positive integer > 0`
 	pause = 3
+	conf  = "config.json"
 )
+
+type RedisConfig struct {
+	Host string `json:"host"`
+	Port string `json:"port"`
+}
+type Config struct {
+	Redis RedisConfig `json:"redis"`
+}
 
 type Hash struct {
 	Seed string `json:"number"`
 	Hash string `json:"hash"`
+}
+
+func loadConfig() (res Config, err error) {
+	file, err := os.Open(conf)
+	defer file.Close()
+	if err != nil {
+		fmt.Println(err)
+		err = fmt.Errorf("error in loadConfig %s", err)
+		return res, err
+	}
+	parser := json.NewDecoder(file)
+	err = parser.Decode(&res)
+	return res, nil
 }
 
 func makeHashJSON(n string) []byte {
@@ -70,6 +92,7 @@ func main() {
 		fmt.Println(usage)
 		os.Exit(1)
 	}
+	// for now presume Args[1] is digit
 	if len(os.Args[1]) < 6 {
 		fmt.Println(usage)
 		os.Exit(1)
@@ -85,7 +108,14 @@ func main() {
 		fmt.Println(usage)
 		os.Exit(1)
 	}
+	// load configs
+	config, err := loadConfig()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
+	fmt.Printf("host: %s, port: %s\n", config.Redis.Host, config.Redis.Port)
 	gen := makeGenerator(laps)
 	for i := 0; i < laps; i++ {
 		replacer := strings.NewReplacer(number[len(number)-4:], gen())
