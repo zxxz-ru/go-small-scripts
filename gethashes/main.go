@@ -4,13 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/net/websocket"
 	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -20,6 +21,14 @@ const (
 	pause = 3
 	conf  = "config.json"
 )
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 type RedisConfig struct {
 	Host string `json:"host"`
@@ -53,6 +62,9 @@ func loadConfig() (res Config, err error) {
 	return res, nil
 }
 
+// get string and create hash using param n as seed
+// it's not realy SOLID, but for simplicity decided not
+// to break it in two funcs
 func makeHashJSON(n string) []byte {
 	hash := sha256.Sum256([]byte(n))
 	hashStr := fmt.Sprintf("%x", hash)
@@ -103,31 +115,38 @@ func makeGenerator(n int) func() string {
 	}
 }
 
+// send created hash json to chan with provided param number,
+// create random number for laps times sleep for 3 seconds
+// send created json to chan in loop.
 func makeHashes(number string, laps int, ch chan []byte) {
+	defer close(ch)
 	gen := makeGenerator(laps)
 	ch <- makeHashJSON(number)
-	defer close(ch)
 	for i := 1; i < laps; i++ {
+		time.Sleep(pause * time.Second)
 		replacer := strings.NewReplacer(number[len(number)-4:], gen())
 		number = replacer.Replace(number)
 		ch <- makeHashJSON(number)
 	}
 }
 
-func makeHashesServer(ws *websocket.Conn, number string, laps int) func(w *websocket.Conn) {
-	return func(ws *websocket.Conn) {
-		ch := make(chan []byte, laps)
-		counter := 0
-		go makeHashes(number, laps, ch)
-		for hash := range ch {
-			if counter > 0 {
-				time.Sleep(pause * time.Second)
-			}
-			fmt.Printf("%s", hash)
-			counter = counter + 1
-			// ws.Message.Send(hash)
+// send hashes to web script using websocket connection
+// number and laps are parameters passed with command line
+func sendHashes(conn *websocket.Conn, number string, laps int) {
+	ch := make(chan []byte, laps)
+	go makeHashes(number, laps, ch)
+	for hash := range ch {
+		w, err := conn.NextWriter(websocket.TextMessage)
+		if err != nil {
+			fmt.Println(err.Error())
 		}
+		// fmt.Printf("%s\n", hash)
+		w.Write(hash)
+		w.Close()
 	}
+	conn.Close()
+	fmt.Println("Done, exit now.")
+	os.Exit(0)
 }
 
 func main() {
@@ -153,19 +172,27 @@ func main() {
 		os.Exit(1)
 	}
 	// load configs
-	config, err := loadConfig()
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	ws, err := websocket.Dial(config.WS.Location, "", config.WS.Origin)
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(1)
-	}
-	wsServer := makeHashesServer(ws, number, laps)
-	http.Handle(config.WS.Location+"/", websocket.Handler(wsServer))
-	err = http.ListenAndServe(config.WS.Location, nil)
+	// config, err := loadConfig()
+	// if err != nil {
+	// 	fmt.Println(err)
+	// 	os.Exit(1)
+	// }
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "hashes.html")
+	})
+
+	http.HandleFunc("/hashes", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+		go sendHashes(conn, number, laps)
+	})
+
+	err = http.ListenAndServe(":8080", nil)
+
 	if err != nil {
 		panic("ListenAndServe: " + err.Error())
 	}
