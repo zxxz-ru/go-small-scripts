@@ -4,10 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"math/rand"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -22,8 +25,14 @@ type RedisConfig struct {
 	Host string `json:"host"`
 	Port string `json:"port"`
 }
+type WebSocketConfig struct {
+	Location string `json:"location"`
+	Origin   string `json:"origin"`
+	Port     string `json:"port"`
+}
 type Config struct {
-	Redis RedisConfig `json:"redis"`
+	Redis RedisConfig     `json:"redis"`
+	WS    WebSocketConfig `json:"websocket"`
 }
 
 type Hash struct {
@@ -54,6 +63,8 @@ func makeHashJSON(n string) []byte {
 	}
 	return res
 }
+
+// create long string of random digits
 func makePool(n int) string {
 	var res string
 	for _, v := range rand.Perm(n * 100) {
@@ -61,6 +72,9 @@ func makePool(n int) string {
 	}
 	return res
 }
+
+// compares range of srings from slice
+// return true if string is unic
 func isUnic(s string, sl []string) bool {
 	res := false
 	for _, str := range sl {
@@ -71,6 +85,9 @@ func isUnic(s string, sl []string) bool {
 	}
 	return !res
 }
+
+// create generator function which returns string of
+// four unic digits
 func makeGenerator(n int) func() string {
 	var unics []string
 	pool := makePool(n)
@@ -83,6 +100,33 @@ func makeGenerator(n int) func() string {
 			return try
 		}
 		goto Loop
+	}
+}
+
+func makeHashes(number string, laps int, ch chan []byte) {
+	gen := makeGenerator(laps)
+	ch <- makeHashJSON(number)
+	defer close(ch)
+	for i := 1; i < laps; i++ {
+		replacer := strings.NewReplacer(number[len(number)-4:], gen())
+		number = replacer.Replace(number)
+		ch <- makeHashJSON(number)
+	}
+}
+
+func makeHashesServer(ws *websocket.Conn, number string, laps int) func(w *websocket.Conn) {
+	return func(ws *websocket.Conn) {
+		ch := make(chan []byte, laps)
+		counter := 0
+		go makeHashes(number, laps, ch)
+		for hash := range ch {
+			if counter > 0 {
+				time.Sleep(pause * time.Second)
+			}
+			fmt.Printf("%s", hash)
+			counter = counter + 1
+			// ws.Message.Send(hash)
+		}
 	}
 }
 
@@ -114,14 +158,16 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("host: %s, port: %s\n", config.Redis.Host, config.Redis.Port)
-	gen := makeGenerator(laps)
-	for i := 0; i < laps; i++ {
-		replacer := strings.NewReplacer(number[len(number)-4:], gen())
-		number = replacer.Replace(number)
-		fmt.Println(number)
+	ws, err := websocket.Dial(config.WS.Location, "", config.WS.Origin)
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
 	}
-	res := makeHashJSON(os.Args[1])
-	fmt.Println(string(res))
+	wsServer := makeHashesServer(ws, number, laps)
+	http.Handle(config.WS.Location+"/", websocket.Handler(wsServer))
+	err = http.ListenAndServe(config.WS.Location, nil)
+	if err != nil {
+		panic("ListenAndServe: " + err.Error())
+	}
+
 }

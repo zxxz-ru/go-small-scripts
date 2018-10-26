@@ -2,5 +2,10 @@
   "redis":{
     "host":"localhost",
     "port":"6369"
+  },
+  "websocket":{
+    "origin":"http://localhost",
+    "location":"ws://localhost:8081/ws",
+    "port":"8081"
   }
 }
